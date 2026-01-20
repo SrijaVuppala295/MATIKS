@@ -30,14 +30,14 @@ const COLORS = {
 
 // Premium Hover Component
 const HoverableRow = ({ children, style, contentMargin }: any) => {
-  const scale = useRef(new Animated.Value(1)).current;
+  // const scale = useRef(new Animated.Value(1)).current; // Removed scale to fix flickering
   const opacity = useRef(new Animated.Value(1)).current;
   const highlight = useRef(new Animated.Value(0)).current;
 
   // Web-compatible hover handlers
   const handleHoverIn = () => {
     Animated.parallel([
-      Animated.spring(scale, { toValue: 1.02, useNativeDriver: false }), // Native driver false for color/layout
+      // Animated.spring(scale, { toValue: 1.02, useNativeDriver: false }), // Native driver false for color/layout
       Animated.timing(opacity, { toValue: 0.8, duration: 150, useNativeDriver: false }),
       Animated.timing(highlight, { toValue: 1, duration: 200, useNativeDriver: false }),
     ]).start();
@@ -45,7 +45,7 @@ const HoverableRow = ({ children, style, contentMargin }: any) => {
 
   const handleHoverOut = () => {
     Animated.parallel([
-      Animated.spring(scale, { toValue: 1, useNativeDriver: false }),
+      // Animated.spring(scale, { toValue: 1, useNativeDriver: false }),
       Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: false }),
       Animated.timing(highlight, { toValue: 0, duration: 200, useNativeDriver: false }),
     ]).start();
@@ -64,7 +64,7 @@ const HoverableRow = ({ children, style, contentMargin }: any) => {
       onPressOut={handleHoverOut}
       style={{ width: '100%' }}
     >
-      <Animated.View style={[style, { transform: [{ scale }], opacity, marginHorizontal: contentMargin, backgroundColor }]}>
+      <Animated.View style={[style, { opacity, marginHorizontal: contentMargin, backgroundColor }]}>
         {children}
       </Animated.View>
     </Pressable>
@@ -158,7 +158,7 @@ export default function LeaderboardScreen() {
   useEffect(() => {
     const handler = setTimeout(() => {
       setDebouncedQuery(query);
-    }, 500);
+    }, 200);
 
     return () => {
       clearTimeout(handler);

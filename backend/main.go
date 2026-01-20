@@ -23,6 +23,7 @@ import (
 var (
 	ctx = context.Background()
 	rdb *redis.Client
+	userCache []string // Local in-memory cache of usernames
 )
 
 //
@@ -103,46 +104,45 @@ func seedUsers() {
 // --------------------
 //
 func getLeaderboard(page, limit int, query string) ([]RankedUser, int64) {
-	// SEARCH
+	// SEARCH (Optimized In-Memory)
 	if query != "" {
 		var results []RankedUser
-		cursor := uint64(0)
-		pattern := "*" + query + "*"
+		var matchedMembers []string
 
-		// Batch optimization with Pipeline
-		for {
-			items, next, err := rdb.ZScan(ctx, "leaderboard", cursor, pattern, 5000).Result()
-			if err != nil {
-				break
-			}
-			cursor = next
-
-			if len(items) > 0 {
-				pipe := rdb.Pipeline()
-				rankCmds := make([]*redis.IntCmd, 0, len(items)/2)
-
-				for i := 0; i < len(items); i += 2 {
-					member := items[i]
-					rankCmds = append(rankCmds, pipe.ZRevRank(ctx, "leaderboard", member))
-				}
-
-				_, _ = pipe.Exec(ctx) // Execute batch
-
-				for i := 0; i < len(items); i += 2 {
-					member := items[i]
-					score, _ := strconv.ParseFloat(items[i+1], 64)
-					rank := rankCmds[i/2].Val()
-
-					results = append(results, RankedUser{
-						Username: member,
-						Rating:   int(score),
-						Rank:     int(rank) + 1,
-					})
+		// 1. Find matches in local cache (Instant)
+		count := 0
+		for _, u := range userCache {
+			if containsIgnoreCase(u, query) {
+				matchedMembers = append(matchedMembers, u)
+				count++
+				if count >= 50 { // Limit to top 50 matches
+					break
 				}
 			}
+		}
 
-			if cursor == 0 {
-				break
+		// 2. Fetch data from Redis (Single RTT)
+		if len(matchedMembers) > 0 {
+			pipe := rdb.Pipeline()
+			rankCmds := make([]*redis.IntCmd, len(matchedMembers))
+			scoreCmds := make([]*redis.FloatCmd, len(matchedMembers))
+
+			for i, member := range matchedMembers {
+				rankCmds[i] = pipe.ZRevRank(ctx, "leaderboard", member)
+				scoreCmds[i] = pipe.ZScore(ctx, "leaderboard", member)
+			}
+
+			_, _ = pipe.Exec(ctx)
+
+			for i, member := range matchedMembers {
+				rank := rankCmds[i].Val()
+				score := scoreCmds[i].Val()
+
+				results = append(results, RankedUser{
+					Username: member,
+					Rating:   int(score),
+					Rank:     int(rank) + 1,
+				})
 			}
 		}
 
@@ -268,6 +268,13 @@ func main() {
 
 	rdb.FlushDB(ctx)
 	seedUsers()
+	
+	// Hydrate in-memory cache
+	fmt.Println("Hydrating user cache...")
+	allUsers, _ := rdb.ZRange(ctx, "leaderboard", 0, -1).Result()
+	userCache = allUsers
+	fmt.Println("Cached", len(userCache), "users in memory")
+
 	startRandomScoreUpdates()
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
