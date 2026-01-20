@@ -16,7 +16,7 @@ A high-performance, real-time leaderboard application designed to handle million
 
 ### Backend
 *   **Language**: [Golang](https://go.dev/) (High performance & concurrency)
-*   **Database**: [Redis](https://redis.io/) (In-memory data structure store for caching & leaderboards)
+*   **Database**: [Redis](https://redis.io/) (Used with Docker for local dev; built to scale for millions of users in production)
 *   **API**: RESTful API for frontend communication.
 
 ### Frontend
