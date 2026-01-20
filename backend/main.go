@@ -109,6 +109,7 @@ func getLeaderboard(page, limit int, query string) ([]RankedUser, int64) {
 		cursor := uint64(0)
 		pattern := "*" + query + "*"
 
+		// Batch optimization with Pipeline
 		for {
 			items, next, err := rdb.ZScan(ctx, "leaderboard", cursor, pattern, 5000).Result()
 			if err != nil {
@@ -116,17 +117,30 @@ func getLeaderboard(page, limit int, query string) ([]RankedUser, int64) {
 			}
 			cursor = next
 
-			for i := 0; i < len(items); i += 2 {
-				member := items[i]
-				score, _ := strconv.ParseFloat(items[i+1], 64)
-				rank, _ := rdb.ZRevRank(ctx, "leaderboard", member).Result()
+			if len(items) > 0 {
+				pipe := rdb.Pipeline()
+				rankCmds := make([]*redis.IntCmd, 0, len(items)/2)
 
-				results = append(results, RankedUser{
-					Username: member,
-					Rating:   int(score),
-					Rank:     int(rank) + 1,
-				})
+				for i := 0; i < len(items); i += 2 {
+					member := items[i]
+					rankCmds = append(rankCmds, pipe.ZRevRank(ctx, "leaderboard", member))
+				}
+
+				_, _ = pipe.Exec(ctx) // Execute batch
+
+				for i := 0; i < len(items); i += 2 {
+					member := items[i]
+					score, _ := strconv.ParseFloat(items[i+1], 64)
+					rank := rankCmds[i/2].Val()
+
+					results = append(results, RankedUser{
+						Username: member,
+						Rating:   int(score),
+						Rank:     int(rank) + 1,
+					})
+				}
 			}
+
 			if cursor == 0 {
 				break
 			}
@@ -186,31 +200,40 @@ func getLeaderboard(page, limit int, query string) ([]RankedUser, int64) {
 func startRandomScoreUpdates() {
 	go func() {
 		for {
-			time.Sleep(6 * time.Second)
+			// Much faster updates (1s instead of 6s)
+			time.Sleep(1 * time.Second)
 
+			// 1. High volatility for Top 10 to ensure movement
+			topUsers, _ := rdb.ZRevRange(ctx, "leaderboard", 0, 9).Result()
+			if len(topUsers) > 0 {
+				// Pick 3 random top players to modify
+				for k := 0; k < 3; k++ {
+					target := topUsers[rand.Intn(len(topUsers))]
+					delta := float64(rand.Intn(41) - 20) // -20 to +20
+					rdb.ZIncrBy(ctx, "leaderboard", delta, target)
+				}
+			}
+
+			// 2. Standard background shuffle for Top 50
 			users, err := rdb.ZRevRange(ctx, "leaderboard", 0, 49).Result()
 			if err != nil || len(users) == 0 {
 				continue
 			}
 
-			for i := 0; i < rand.Intn(6)+5; i++ {
+			for i := 0; i < rand.Intn(10)+5; i++ {
 				u := users[rand.Intn(len(users))]
 				score, err := rdb.ZScore(ctx, "leaderboard", u).Result()
 				if err != nil {
 					continue
 				}
 
-				delta := rand.Intn(150) - 50
-				if score >= 4950 && rand.Float64() < 0.8 {
-					delta = -rand.Intn(50)
-				}
-
+				delta := rand.Intn(100) - 40 // Bias slightly positive to push scores up over time
 				newScore := score + float64(delta)
+				if newScore > 6000 { // Cap slightly higher
+					newScore = 6000
+				}
 				if newScore < 100 {
 					newScore = 100
-				}
-				if newScore > 5000 {
-					newScore = 5000
 				}
 
 				rdb.ZAdd(ctx, "leaderboard", redis.Z{
