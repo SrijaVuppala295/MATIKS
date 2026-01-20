@@ -1,4 +1,5 @@
 package main
+
 import (
 	"context"
 	"encoding/json"
@@ -6,26 +7,29 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"sort"
 )
 
-
+//
 // --------------------
 // Globals
 // --------------------
+//
 var (
 	ctx = context.Background()
 	rdb *redis.Client
 )
 
+//
 // --------------------
 // Helpers
 // --------------------
+//
 func enableCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -36,24 +40,28 @@ func containsIgnoreCase(s, sub string) bool {
 	return strings.Contains(strings.ToLower(s), strings.ToLower(sub))
 }
 
+//
 // --------------------
 // Data Structures
 // --------------------
+//
 type RankedUser struct {
 	Username string `json:"username"`
 	Rating   int    `json:"rating"`
 	Rank     int    `json:"rank"`
 }
 
+//
 // --------------------
 // Seed users into Redis
 // --------------------
+//
 func seedUsers() {
 	first := []string{"rahul", "sai", "arjun", "kiran", "rohit"}
 	last := []string{"kumar", "reddy", "sharma", "verma", "patel"}
 
-	// 1. Bulk seed normal users (Scores 100 - 4899)
 	pipe := rdb.Pipeline()
+
 	for i := 1; i <= 10000; i++ {
 		username := fmt.Sprintf(
 			"%s_%s_%d",
@@ -61,7 +69,7 @@ func seedUsers() {
 			last[rand.Intn(len(last))],
 			i,
 		)
-		// Most users get lower scores to make 5000 rare
+
 		rating := rand.Intn(4800) + 100
 
 		pipe.ZAdd(ctx, "leaderboard", redis.Z{
@@ -69,117 +77,91 @@ func seedUsers() {
 			Member: username,
 		})
 
-		// Execute in batches of 1000 to be faster
 		if i%1000 == 0 {
-			_, err := pipe.Exec(ctx)
-			if err != nil {
-				fmt.Println("Error seeding batch:", err)
-			}
+			_, _ = pipe.Exec(ctx)
 		}
 	}
 	_, _ = pipe.Exec(ctx)
 
-	// 2. Explicitly add 1-2 TOP players (The only ones with ~5000)
+	// Explicit top users
 	rdb.ZAdd(ctx, "leaderboard", redis.Z{Score: 5000, Member: "Legendary_Player_1"})
 	rdb.ZAdd(ctx, "leaderboard", redis.Z{Score: 4998, Member: "Master_Gamer_2"})
 
-	// 3. Add crowding at the top (competitors) so updates are visible
 	for i := 1; i <= 8; i++ {
 		rdb.ZAdd(ctx, "leaderboard", redis.Z{
-			Score:  float64(4990 + rand.Intn(8)), // 4990 - 4997
+			Score:  float64(4990 + rand.Intn(8)),
 			Member: fmt.Sprintf("Pro_Player_%d", i),
 		})
 	}
 
-	fmt.Println("Seeded 10,000 users. Logic: Rare 5000s + Top Crowding.")
+	fmt.Println("Seeded 10,000 users")
 }
 
+//
 // --------------------
-// Leaderboard from Redis
+// Leaderboard Logic
 // --------------------
+//
 func getLeaderboard(page, limit int, query string) ([]RankedUser, int64) {
-	// ---------------------------
-	// 1. SEARCH LOGIC
-	// ---------------------------
+	// SEARCH
 	if query != "" {
-		// Use ZSCAN to find keys matching the query
-		var matches []RankedUser
+		var results []RankedUser
 		cursor := uint64(0)
 		pattern := "*" + query + "*"
 
 		for {
-			keys, cursorVal, err := rdb.ZScan(ctx, "leaderboard", cursor, pattern, 10000).Result()
+			items, next, err := rdb.ZScan(ctx, "leaderboard", cursor, pattern, 5000).Result()
 			if err != nil {
 				break
 			}
-			cursor = cursorVal
+			cursor = next
 
-			// ZScan returns [member, score, member, score...]
-			// keys[i] is member, keys[i+1] is score (as string)
-			for i := 0; i < len(keys); i += 2 {
-				member := keys[i]
-				scoreStr := keys[i+1]
-				score, _ := strconv.ParseFloat(scoreStr, 64)
-
-				// Get actual rank (expensive but needed for correct rank display)
+			for i := 0; i < len(items); i += 2 {
+				member := items[i]
+				score, _ := strconv.ParseFloat(items[i+1], 64)
 				rank, _ := rdb.ZRevRank(ctx, "leaderboard", member).Result()
 
-				matches = append(matches, RankedUser{
+				results = append(results, RankedUser{
 					Username: member,
 					Rating:   int(score),
-					Rank:     int(rank) + 1, // 0-indexed to 1-indexed
+					Rank:     int(rank) + 1,
 				})
 			}
-
 			if cursor == 0 {
 				break
 			}
 		}
 
-		// Sort matches by Rank (High Score first)
-		sort.Slice(matches, func(i, j int) bool {
-			return matches[i].Rank < matches[j].Rank
+		sort.Slice(results, func(i, j int) bool {
+			return results[i].Rank < results[j].Rank
 		})
 
-		// Pagination for search results
-		total := int64(len(matches))
+		total := int64(len(results))
 		start := (page - 1) * limit
-		if start >= len(matches) {
+		end := start + limit
+		if start >= len(results) {
 			return []RankedUser{}, total
 		}
-		end := start + limit
-		if end > len(matches) {
-			end = len(matches)
+		if end > len(results) {
+			end = len(results)
 		}
 
-		return matches[start:end], total
+		return results[start:end], total
 	}
 
-	// ---------------------------
-	// 2. STANDARD LIST LOGIC
-	// ---------------------------
-	
-	// Get total count
-	total, err := rdb.ZCard(ctx, "leaderboard").Result()
-	if err != nil {
-		return []RankedUser{}, 0
-	}
-
-	// Calculate range
+	// STANDARD LEADERBOARD
+	total, _ := rdb.ZCard(ctx, "leaderboard").Result()
 	start := int64((page - 1) * limit)
 	stop := start + int64(limit) - 1
 
-	results, err := rdb.ZRevRangeWithScores(ctx, "leaderboard", start, stop).Result()
-	if err != nil {
-		return []RankedUser{}, total
-	}
+	zs, _ := rdb.ZRevRangeWithScores(ctx, "leaderboard", start, stop).Result()
 
 	var leaderboard []RankedUser
 	prevScore := -1.0
-	rank := int(start) // Rank starts from offset
+	rank := int(start)
 	actual := int(start)
 
-	for _, z := range results {
+	for _, z := range zs {
 		actual++
 		if z.Score != prevScore {
 			rank = actual
@@ -196,75 +178,34 @@ func getLeaderboard(page, limit int, query string) ([]RankedUser, int64) {
 	return leaderboard, total
 }
 
-
+//
 // --------------------
-// Random score simulation
+// Random Score Updates
 // --------------------
+//
 func startRandomScoreUpdates() {
 	go func() {
 		for {
-			// ⚡ UPDATE: Frequency 6 seconds (User Request)
 			time.Sleep(6 * time.Second)
 
-			// 1. Target TOP 50 users (Visible on main screen)
-			topUsers, err := rdb.ZRevRange(ctx, "leaderboard", 0, 49).Result()
-			if err != nil {
-				topUsers = []string{}
-			}
-
-			// 2. Target RANDOM 50 users (So searched users also update)
-			var randomUsers []string
-			total, err := rdb.ZCard(ctx, "leaderboard").Result()
-			if err == nil && total > 0 {
-				start := int64(rand.Intn(int(total)))
-				randomUsers, _ = rdb.ZRange(ctx, "leaderboard", start, start+49).Result()
-			}
-
-			// Combine unique users
-			userMap := make(map[string]bool)
-			var users []string
-
-			for _, u := range topUsers {
-				if !userMap[u] {
-					userMap[u] = true
-					users = append(users, u)
-				}
-			}
-			for _, u := range randomUsers {
-				if !userMap[u] {
-					userMap[u] = true
-					users = append(users, u)
-				}
-			}
-
-			if len(users) == 0 {
+			users, err := rdb.ZRevRange(ctx, "leaderboard", 0, 49).Result()
+			if err != nil || len(users) == 0 {
 				continue
 			}
 
-			// Update 5-10 users at a time
-			updates := rand.Intn(6) + 5 
-			for i := 0; i < updates; i++ {
+			for i := 0; i < rand.Intn(6)+5; i++ {
 				u := users[rand.Intn(len(users))]
-
 				score, err := rdb.ZScore(ctx, "leaderboard", u).Result()
 				if err != nil {
 					continue
 				}
 
-				// Logic to keep 5000 rare:
-				delta := 0
-				if score >= 4950 {
-					if rand.Float64() < 0.8 {
-						delta = -(rand.Intn(50) + 1)
-					} else {
-						delta = rand.Intn(10) + 1
-					}
-				} else {
-					delta = rand.Intn(150) - 50 // Bias towards gain
+				delta := rand.Intn(150) - 50
+				if score >= 4950 && rand.Float64() < 0.8 {
+					delta = -rand.Intn(50)
 				}
 
 				newScore := score + float64(delta)
-
 				if newScore < 100 {
 					newScore = 100
 				}
@@ -281,41 +222,30 @@ func startRandomScoreUpdates() {
 	}()
 }
 
-
+//
 // --------------------
 // MAIN
 // --------------------
+//
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	// 🔌 Redis connection (Supports Envars for Prod)
-	redisUrl := os.Getenv("REDIS_URL")
-	if redisUrl != "" {
-		opt, err := redis.ParseURL(redisUrl)
-		if err != nil {
-			panic(err)
-		}
+	// Redis connection
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL != "" {
+		opt, _ := redis.ParseURL(redisURL)
 		rdb = redis.NewClient(opt)
 	} else {
-		rdb = redis.NewClient(&redis.Options{
-			Addr: "localhost:6379",
-		})
+		rdb = redis.NewClient(&redis.Options{Addr: "localhost:6379"})
 	}
 
 	if _, err := rdb.Ping(ctx).Result(); err != nil {
 		panic("Redis not connected")
 	}
-	fmt.Println("Connected to Redis")
 
-	// Flush old data for tuning
 	rdb.FlushDB(ctx)
-	
 	seedUsers()
 	startRandomScoreUpdates()
-
-	// --------------------
-	// Routes
-	// --------------------
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		enableCORS(w)
@@ -325,28 +255,23 @@ func main() {
 	http.HandleFunc("/leaderboard", func(w http.ResponseWriter, r *http.Request) {
 		enableCORS(w)
 
-		pageStr := r.URL.Query().Get("page")
-		limitStr := r.URL.Query().Get("limit")
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		query := r.URL.Query().Get("q")
 
-		page, err := strconv.Atoi(pageStr)
-		if err != nil || page < 1 {
+		if page < 1 {
 			page = 1
 		}
-
-		limit, err := strconv.Atoi(limitStr)
-		if err != nil || limit < 1 {
+		if limit < 1 {
 			limit = 50
 		}
 
 		users, total := getLeaderboard(page, limit, query)
 
-		response := map[string]interface{}{
+		json.NewEncoder(w).Encode(map[string]interface{}{
 			"users": users,
 			"total": total,
-		}
-
-		json.NewEncoder(w).Encode(response)
+		})
 	})
 
 	http.HandleFunc("/update", func(w http.ResponseWriter, r *http.Request) {
@@ -358,10 +283,9 @@ func main() {
 		}
 
 		username := r.URL.Query().Get("username")
-		ratingStr := r.URL.Query().Get("rating")
+		rating, _ := strconv.Atoi(r.URL.Query().Get("rating"))
 
-		rating, err := strconv.Atoi(ratingStr)
-		if err != nil || rating < 100 || rating > 5000 {
+		if rating < 100 || rating > 5000 {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -371,11 +295,15 @@ func main() {
 			Member: username,
 		})
 
-		json.NewEncoder(w).Encode(map[string]string{
-			"status": "rating updated",
-		})
+		json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
 	})
 
-	fmt.Println("Server running at http://localhost:8080")
-	http.ListenAndServe(":8080", nil)
+	// ✅ Render-compatible PORT
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	fmt.Println("Server running on port", port)
+	http.ListenAndServe(":"+port, nil)
 }
