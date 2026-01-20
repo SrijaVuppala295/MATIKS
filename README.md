@@ -2,8 +2,6 @@
 
 A high-performance, real-time leaderboard application designed to handle millions of users with instant search lookup and live score updates.
 
-![Matiks Leaderboard](frontend/assets/images/adaptive-icon.png)
-
 ## 🚀 Key Features
 
 *   **Instant Search Lookup**: Find any user among millions in milliseconds using optimized Redis indexing (`ZSCAN/HSCAN`).
