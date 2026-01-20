@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -287,10 +288,19 @@ func startRandomScoreUpdates() {
 func main() {
 	rand.Seed(time.Now().UnixNano())
 
-	// 🔌 Redis connection (MUST be inside main)
-	rdb = redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
+	// 🔌 Redis connection (Supports Envars for Prod)
+	redisUrl := os.Getenv("REDIS_URL")
+	if redisUrl != "" {
+		opt, err := redis.ParseURL(redisUrl)
+		if err != nil {
+			panic(err)
+		}
+		rdb = redis.NewClient(opt)
+	} else {
+		rdb = redis.NewClient(&redis.Options{
+			Addr: "localhost:6379",
+		})
+	}
 
 	if _, err := rdb.Ping(ctx).Result(); err != nil {
 		panic("Redis not connected")
