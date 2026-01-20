@@ -14,7 +14,7 @@ import {
   Pressable,
 } from "react-native";
 
-const BACKEND_URL = "http://localhost:8080";
+const BACKEND_URL = "https://matiks-uw50.onrender.com";
 
 // Theme Colors
 const COLORS = {
