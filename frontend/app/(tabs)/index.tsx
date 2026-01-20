@@ -10,6 +10,8 @@ import {
   ActivityIndicator,
   Platform,
   useWindowDimensions,
+  Animated,
+  Pressable,
 } from "react-native";
 
 const BACKEND_URL = "http://localhost:8080";
@@ -23,7 +25,74 @@ const COLORS = {
   glassBorder: "rgba(255, 255, 255, 0.5)", // Increased visibility
   gold: "#FFD700",
   silver: "#C0C0C0",
-  bronze: "#cd8032ff",
+  bronze: "#cd8032",
+};
+
+// Premium Hover Component
+const HoverableRow = ({ children, style, contentMargin }: any) => {
+  const scale = useRef(new Animated.Value(1)).current;
+  const opacity = useRef(new Animated.Value(1)).current;
+  const highlight = useRef(new Animated.Value(0)).current;
+
+  // Web-compatible hover handlers
+  const handleHoverIn = () => {
+    Animated.parallel([
+      Animated.spring(scale, { toValue: 1.02, useNativeDriver: false }), // Native driver false for color/layout
+      Animated.timing(opacity, { toValue: 0.8, duration: 150, useNativeDriver: false }),
+      Animated.timing(highlight, { toValue: 1, duration: 200, useNativeDriver: false }),
+    ]).start();
+  };
+
+  const handleHoverOut = () => {
+    Animated.parallel([
+      Animated.spring(scale, { toValue: 1, useNativeDriver: false }),
+      Animated.timing(opacity, { toValue: 1, duration: 150, useNativeDriver: false }),
+      Animated.timing(highlight, { toValue: 0, duration: 200, useNativeDriver: false }),
+    ]).start();
+  };
+
+  const backgroundColor = highlight.interpolate({
+    inputRange: [0, 1],
+    outputRange: [COLORS.glass, 'rgba(255, 255, 255, 0.2)'], // Light whitish highlight
+  });
+
+  return (
+    <Pressable
+      onHoverIn={handleHoverIn}
+      onHoverOut={handleHoverOut}
+      onPressIn={handleHoverIn} // Touch support
+      onPressOut={handleHoverOut}
+      style={{ width: '100%' }}
+    >
+      <Animated.View style={[style, { transform: [{ scale }], opacity, marginHorizontal: contentMargin, backgroundColor }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
+};
+
+// Premium Podium Item Component
+const HoverablePodiumItem = ({ children, style, podiumItemWidth, podiumMargin }: any) => {
+  const scale = useRef(new Animated.Value(1)).current;
+
+  const handleHoverIn = () => {
+    Animated.spring(scale, { toValue: 1.05, useNativeDriver: true }).start();
+  };
+
+  const handleHoverOut = () => {
+    Animated.spring(scale, { toValue: 1, useNativeDriver: true }).start();
+  };
+
+  return (
+    <Pressable
+      onHoverIn={handleHoverIn}
+      onHoverOut={handleHoverOut}
+    >
+      <Animated.View style={[style, { transform: [{ scale }], width: podiumItemWidth, marginHorizontal: podiumMargin }]}>
+        {children}
+      </Animated.View>
+    </Pressable>
+  );
 };
 
 const PODIUM_IMAGES: Record<number, string> = {
@@ -41,8 +110,8 @@ export default function LeaderboardScreen() {
 
   // Podium Responsive Values
   const podiumAvatarSize = isMobile ? 50 : 80;
-  const podiumItemWidth = isMobile ? (width - 40) / 3.2 : 200; // Fit 3 items
-  const podiumMargin = isMobile ? 2 : 30; // Tight margins on mobile
+  const podiumItemWidth = isMobile ? (width - 40) / 3.4 : 200; // Slightly narrower to fit more margin
+  const podiumMargin = isMobile ? 6 : 30; // Increased margin for spacing
 
   const [users, setUsers] = useState<any[]>([]);
   const [page, setPage] = useState(1);
@@ -144,16 +213,15 @@ export default function LeaderboardScreen() {
         {/* Header Section */}
         {/* Header Section */}
         <View style={styles.headerTitleContainer}>
-          {/* Desktop Only: Logo + Text */}
-          {!isMobile && (
-            <View style={styles.logoContainer}>
-              <Image source={{ uri: LOGO_URI }} style={styles.logoImage} resizeMode="contain" />
-              <Text style={styles.brandName}>MATIKS</Text>
-            </View>
-          )}
+          {/* Logo Container - Always visible for Image */}
+          <View style={styles.logoContainer}>
+            <Image source={{ uri: LOGO_URI }} style={styles.logoImage} resizeMode="contain" />
+            {/* Text - Only on Desktop */}
+            {!isMobile && <Text style={styles.brandName}>MATIKS</Text>}
+          </View>
 
-          {/* Title - Centered on Mobile (0 margin), Guarded on Desktop (120 margin) */}
-          <View style={[styles.pageTitleContainer, { marginHorizontal: isMobile ? 0 : 120 }]}>
+          {/* Title - Guarded margins on both to clear logo */}
+          <View style={[styles.pageTitleContainer, { marginHorizontal: isMobile ? 60 : 120 }]}>
             <Text style={[styles.pageTitle, { fontSize: isMobile ? 24 : 32 }]}>LEADERBOARD</Text>
           </View>
         </View>
@@ -170,11 +238,15 @@ export default function LeaderboardScreen() {
               if (index === 2) rank = 3;
 
               return (
-                <View key={u.username} style={[
-                  styles.podiumItem,
-                  isWinner && styles.winnerPodiumItem,
-                  { width: podiumItemWidth, marginHorizontal: podiumMargin }
-                ]}>
+                <HoverablePodiumItem
+                  key={u.username}
+                  style={[
+                    styles.podiumItem,
+                    isWinner ? styles.winnerPodiumItem : styles.runnerUpPodiumItem
+                  ]}
+                  podiumItemWidth={podiumItemWidth}
+                  podiumMargin={podiumMargin}
+                >
                   <View style={[
                     styles.avatarContainer,
                     { borderColor: getBorderColor(rank) }
@@ -182,9 +254,9 @@ export default function LeaderboardScreen() {
                     <Image
                       source={{ uri: PODIUM_IMAGES[rank] || `https://i.pravatar.cc/150?img=${rank + 10}` }}
                       style={{
-                        width: isWinner ? podiumAvatarSize * 1.2 : podiumAvatarSize,
-                        height: isWinner ? podiumAvatarSize * 1.2 : podiumAvatarSize,
-                        borderRadius: (isWinner ? podiumAvatarSize * 1.2 : podiumAvatarSize) / 2
+                        width: isWinner ? podiumAvatarSize * 1.4 : podiumAvatarSize * 1.2,
+                        height: isWinner ? podiumAvatarSize * 1.4 : podiumAvatarSize * 1.2,
+                        borderRadius: (isWinner ? podiumAvatarSize * 1.4 : podiumAvatarSize * 1.2) / 2
                       }}
                     />
                     <View style={styles.rankBadge}>
@@ -193,7 +265,7 @@ export default function LeaderboardScreen() {
                   </View>
                   <Text style={[styles.podiumName, { fontSize: isMobile ? 12 : 16 }]} numberOfLines={1}>{u.username}</Text>
                   <Text style={[styles.podiumPoints, { fontSize: isMobile ? 11 : 14 }]}>{u.rating} pts</Text>
-                </View>
+                </HoverablePodiumItem>
               );
             })}
           </View>
@@ -224,13 +296,14 @@ export default function LeaderboardScreen() {
         {/* List Items */}
         {listUsers.map((u) => (
           // ⚡ FIX: Use stable key (username) to prevent flickering/glitches
-          <View key={u.username} style={[styles.tableRow, { marginHorizontal: contentMargin }]}>
+          // ⚡ FIX: Use stable key (username) to prevent flickering/glitches
+          <HoverableRow key={u.username} style={styles.tableRow} contentMargin={contentMargin}>
             <View style={styles.rankContainer}>
               <Text style={styles.rankText}>#{u.rank}</Text>
             </View>
             <Text style={styles.checkName} numberOfLines={1}>{u.username}</Text>
             <Text style={styles.checkPoints}>{u.rating}</Text>
-          </View>
+          </HoverableRow>
         ))}
 
         {/* Pagination */}
@@ -338,16 +411,19 @@ const styles = StyleSheet.create({
   },
   podiumItem: {
     alignItems: 'center',
-    width: 200, // Slightly smaller width
+    width: 250, // Slightly smaller width
     marginHorizontal: 30, // More spacing
   },
   winnerPodiumItem: {
-    marginBottom: 30,
-    transform: [{ scale: 1.4 }], // Significantly bigger
+    marginBottom: 40,
+    transform: [{ scale: 1.5 }], // Significantly bigger
     zIndex: 1,
   },
+  runnerUpPodiumItem: {
+    transform: [{ scale: 1.15 }], // Slightly bigger
+  },
   avatarContainer: {
-    borderWidth: 3,
+    borderWidth: 5,
     borderRadius: 60,
     padding: 3,
     marginBottom: 12,
@@ -417,7 +493,12 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1.5, // Thicker border
     borderColor: COLORS.glassBorder,
-    marginHorizontal: 150, // Increased Spacing
+    // marginHorizontal removed here, applied via HoverableRow
+    shadowColor: COLORS.primary, // Glow Effect
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   rankContainer: {
     flex: 0.5,
